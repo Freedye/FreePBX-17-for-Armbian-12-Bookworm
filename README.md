@@ -41,7 +41,7 @@ sync
 ```
 
 ## (Extra Content) Armbian 12 Image for T95 Max+ Android TV Box
-<img src="https://github.com/user-attachments/assets/dd161989-dca9-49a2-a757-504306ed0648" width="25%">
+<img src="https://github.com/user-attachments/assets/dd161989-dca9-49a2-a757-504306ed0648" width="30%">
 
 You will also find a custom Armbian image in the **Releases** section of this repo.
 * **Source:** Derived from ophub builds.
