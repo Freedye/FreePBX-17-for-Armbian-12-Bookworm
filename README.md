@@ -31,8 +31,9 @@ Web Interface: http://<YOUR_IP>/admin
 MariaDB Root Password: armbianpbx
 
 Note for T95 Max+
+
 SD card boot should always be the priority as far as I know.
-Since this is based on Amlogic build, after the installation the toothpick method to boot up via USB won't be usable anymore.
+Since this is based on ophub Amlogic build, after the installation the toothpick method to boot up via USB won't be usable anymore.
 You can still force USB boot by nuking the eMMC:
 
 ```bash
