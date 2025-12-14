@@ -38,7 +38,7 @@ sleep 3
 log "Updating system and installing dependencies..."
 apt-get update && apt-get upgrade -y
 
-# Added libicu-dev (fixes UCP install error) and pkg-config
+# Core dependencies (incl. pkg-config, libedit, libicu-dev)
 apt-get install -y \
     git curl wget vim htop subversion sox pkg-config \
     apache2 mariadb-server mariadb-client \
@@ -47,6 +47,10 @@ apt-get install -y \
     unixodbc odbcinst libltdl7 libicu-dev \
     nodejs npm \
     || error "Failed to install base packages"
+
+# CRITICAL: Install PM2 explicitly (Required by FreePBX 17)
+log "Installing Node.js Process Manager (PM2)..."
+npm install -g pm2@latest || error "Failed to install PM2"
 
 # --- 3. PHP 8.2 STACK & TUNING ---
 log "Installing PHP 8.2..."
