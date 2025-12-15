@@ -37,6 +37,13 @@ You will also find a custom Armbian image in the **Releases** section of this re
 * **Status:** Heavy WIP. Not polished, but functional for this project **IF YOU HAVE EXACTLY THE SAME TV BOX**
 * **Features:** 2GB swap already configured.
 
+# **Instructions:
+1. Burn it with Rufus or BalenaEtcher on a USB stick or SD Card
+2. Remove the power cable, insert your USB stick/SD Card; there is a button at the bottom of the 3.5mm jack hole.
+3. With a toothpick, apply preessure on the button until you hear a click, insert the power cable, keep it pushed for 6-10 seconds.
+4. It will automatically install and power off by itself.
+5. Connect via ssh: root - 1234
+
 Note for T95 Max+
 
 SD card boot should always be the priority as far as I know.
