@@ -48,7 +48,7 @@ apt-get install -y \
     libxml2 libsqlite3-0 libjansson4 libedit2 libxslt1.1 \
     libopus0 libvorbis0a libspeex1 libspeexdsp1 libgsm1 \
     unixodbc odbcinst libltdl7 libicu-dev \
-    nodejs npm acl \
+    nodejs npm acl sngrep \
     || error "Failed to install base packages"
 
 # CRITICAL FIX: Install PM2 explicitly (Required by FreePBX 17 process manager)
