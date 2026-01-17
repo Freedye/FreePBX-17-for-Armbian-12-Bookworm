@@ -63,9 +63,36 @@ rm asterisk.tar.gz
 echo ">>> [BUILDER] Downloading MP3 resources..."
 contrib/scripts/get_mp3_source.sh
 
-# 4. Configuration
-# REMOVED: --with-jansson-bundled (Using system libjansson is safer on Debian 12)
-# KEPT: --with-pjproject-bundled (Required for Asterisk stability)
+# 4. Configuration - verify headers first and clear autoconf cache
+echo ">>> [BUILDER] Verifying presence of network headers..."
+# Check both headers
+if [ ! -f /usr/include/netinet/in.h ] || [ ! -f /usr/include/sys/socket.h ]; then
+    echo ">>> [BUILDER][WARN] One or more required headers missing:"
+    [ -f /usr/include/netinet/in.h ] || echo "  - /usr/include/netinet/in.h (missing)"
+    [ -f /usr/include/sys/socket.h ] || echo "  - /usr/include/sys/socket.h (missing)"
+
+    echo ">>> [BUILDER] Reinstalling libc headers..."
+    apt-get update
+    apt-get install -y --no-install-recommends --reinstall libc6-dev linux-libc-dev || {
+        echo ">>> [BUILDER][FATAL] Reinstall of libc headers failed. See apt output above."
+        exit 1
+    }
+
+    # re-check after reinstall
+    if [ ! -f /usr/include/netinet/in.h ] || [ ! -f /usr/include/sys/socket.h ]; then
+        echo ">>> [BUILDER][FATAL] Headers still missing after reinstall."
+        ls -R /usr/include | sed -n '1,200p'
+        exit 1
+    fi
+fi
+
+# Show compiler include search path for debugging
+echo ">>> [BUILDER] Compiler include search paths (for diagnostics):"
+echo | gcc -E -x c - -v 2>&1 | sed -n '/#include <...> search starts here:/,/#include <...> search ends here:/p'
+
+# Remove any autoconf cache to avoid "(cached) no" results from earlier runs
+rm -f config.cache config.log || true
+
 echo ">>> [BUILDER] Configuring..."
 ./configure --libdir=/usr/lib --with-pjproject-bundled --without-x11 --without-gtk2
 
