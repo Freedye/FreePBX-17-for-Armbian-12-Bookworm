@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================================
-# SCRIPT: uninstall.sh (v0.5)
+# SCRIPT: uninstall.sh (v0.6)
 # PURPOSE: COMPLETELY remove Asterisk, FreePBX, LAMP stack
 # TARGET:  Armbian 12
 # ============================================================================
@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${RED}========================================================${NC}"
-echo -e "${RED}   WARNING: TOTAL UNINSTALLATION SCRIPT (v0.5)          ${NC}"
+echo -e "${RED}   WARNING: FREEPBX UNINSTALLATION SCRIPT (v0.6)            ${NC}"
 echo -e "${RED}========================================================${NC}"
 echo "This script will delete EVERYTHING related to PBX."
 echo ""
