@@ -18,10 +18,12 @@ DEBIAN_FRONTEND=noninteractive
 echo ">>> [BUILDER] Starting build for version: $ASTERISK_VER"
 
 # 1. Install Build Dependencies (inside the container)
+# ADDED: autoconf, automake, libtool to fix bundled PJProject compilation errors
 echo ">>> [BUILDER] Installing dependencies..."
 apt-get update -qq
 apt-get install -y -qq \
     git curl wget build-essential subversion pkg-config \
+    autoconf automake libtool binutils \
     libncurses5-dev libncursesw5-dev libxml2-dev libsqlite3-dev \
     libssl-dev uuid-dev libjansson-dev libedit-dev libxslt1-dev \
     libicu-dev libsrtp2-dev libopus-dev libvorbis-dev libspeex-dev \
@@ -42,9 +44,10 @@ echo ">>> [BUILDER] Downloading MP3 resources..."
 contrib/scripts/get_mp3_source.sh
 
 # 4. Configuration
-# --with-pjproject-bundled: CRITICAL. Uses the internal PJPROJECT version for VoIP stability.
+# REMOVED: --with-jansson-bundled (Using system libjansson is safer on Debian 12)
+# KEPT: --with-pjproject-bundled (Required for Asterisk stability)
 echo ">>> [BUILDER] Configuring..."
-./configure --libdir=/usr/lib --with-pjproject-bundled --with-jansson-bundled --without-x11 --without-gtk2
+./configure --libdir=/usr/lib --with-pjproject-bundled --without-x11 --without-gtk2
 
 # 5. Module Selection (Headless)
 echo ">>> [BUILDER] Selecting modules..."
@@ -54,12 +57,13 @@ menuselect/menuselect --enable CORE-SOUNDS-EN-WAV menuselect.makeopts
 menuselect/menuselect --enable CORE-SOUNDS-EN-ULAW menuselect.makeopts
 menuselect/menuselect --enable CORE-SOUNDS-EN-ALAW menuselect.makeopts
 menuselect/menuselect --enable CORE-SOUNDS-EN-GSM menuselect.makeopts
-# Note: BUILD_NATIVE disabled to ensure generic ARM64 compatibility (S905X3)
+# Disable BUILD_NATIVE to prevent CPU instruction errors on different ARM chips
 menuselect/menuselect --disable BUILD_NATIVE menuselect.makeopts
 
 # 6. Compilation
-echo ">>> [BUILDER] Compiling on $(nproc) cores..."
-make -j$(nproc)
+# MODIFIED: Limited to -j2 to prevent race conditions/crashes in QEMU emulation
+echo ">>> [BUILDER] Compiling (Limited to 2 cores for stability)..."
+make -j2
 
 # 7. Install to temporary directory (Staging)
 echo ">>> [BUILDER] Creating installation structure..."
@@ -70,7 +74,6 @@ make config DESTDIR=$BUILD_DIR/staging
 # 8. Artifact Creation (.tar.gz)
 echo ">>> [BUILDER] Final packaging..."
 cd $BUILD_DIR/staging
-# Standardized filename that your install.sh will look for
 TAR_NAME="asterisk-${ASTERISK_VER}-arm64-debian12.tar.gz"
 tar -czvf "$OUTPUT_DIR/$TAR_NAME" .
 
