@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================================
-# AUTOMATED BUILD SCRIPT (Native ARM64 Mode)
+# AUTOMATED BUILD SCRIPT Native ARM64
 # TARGET: Asterisk 22 LTS for Debian 12 (Bookworm)
 # ============================================================================
 
@@ -11,6 +11,17 @@ set -e
 # --- 1. BOOTSTRAP ---
 echo ">>> [BUILDER] Starting NATIVE build process..."
 export DEBIAN_FRONTEND=noninteractive
+
+# Determine Output Directory based on environment
+if [ -n "$GITHUB_WORKSPACE" ]; then
+    OUTPUT_DIR="$GITHUB_WORKSPACE"
+    echo ">>> [BUILDER] Detected GitHub Actions Native Environment. Output to: $OUTPUT_DIR"
+else
+    OUTPUT_DIR="/workspace"
+    echo ">>> [BUILDER] Defaulting output to: $OUTPUT_DIR"
+fi
+
+mkdir -p "$OUTPUT_DIR"
 
 # --- 2. DEPENDENCIES ---
 echo ">>> [BUILDER] Installing dependencies..."
@@ -32,7 +43,6 @@ apt-get install -y -qq --no-install-recommends \
 ASTERISK_VER="$1"
 [ -z "$ASTERISK_VER" ] && ASTERISK_VER="22-current"
 BUILD_DIR="/usr/src/asterisk_build"
-OUTPUT_DIR="/workspace" # GitHub Actions monta il repo qui di default
 
 mkdir -p $BUILD_DIR
 cd $BUILD_DIR
@@ -73,10 +83,16 @@ make -j$(nproc)
 echo ">>> [BUILDER] Packaging..."
 make install DESTDIR=$BUILD_DIR/staging
 make samples DESTDIR=$BUILD_DIR/staging
+
+mkdir -p "$BUILD_DIR/staging/etc/init.d"
+mkdir -p "$BUILD_DIR/staging/etc/default"
+mkdir -p "$BUILD_DIR/staging/usr/lib/systemd/system"
+
 make config DESTDIR=$BUILD_DIR/staging
 
 cd $BUILD_DIR/staging
 TAR_NAME="asterisk-${ASTERISK_VER}-arm64-debian12.tar.gz"
+echo ">>> [BUILDER] Creating archive at $OUTPUT_DIR/$TAR_NAME..."
 tar -czvf "$OUTPUT_DIR/$TAR_NAME" .
 
 echo ">>> [BUILDER] SUCCESS! Artifact ready: $TAR_NAME"
