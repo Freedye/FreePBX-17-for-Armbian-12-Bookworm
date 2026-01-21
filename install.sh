@@ -465,5 +465,5 @@ rm -f /etc/motd 2>/dev/null  # Remove static motd to avoid duplication
 
 echo -e "${GREEN}========================================================${NC}"
 echo -e "${GREEN}            FREEPBX INSTALLATION COMPLETE!              ${NC}"
-echo -e "${GREEN}   Access: http://$(hostname -I | cut -d' ' -f1)/admin  ${NC}"
+echo -e "${GREEN}       Access: http://$(hostname -I | cut -d' ' -f1)/admin  ${NC}"
 echo -e "${GREEN}========================================================${NC}"
