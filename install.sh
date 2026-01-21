@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================================
-# PROJECT:   Armbian PBX Installer (Asterisk 22 + FreePBX 17 + LAMP) v0.4.2
+# PROJECT:   Armbian PBX Installer (Asterisk 22 + FreePBX 17 + LAMP) v0.4.3
 # TARGET:    Debian 12 Bookworm ARM64
 # ============================================================================
 
@@ -383,7 +383,47 @@ fi
 
 if command -v fwconsole &> /dev/null; then
     fwconsole chown
+    
+    # Install essential FreePBX modules for complete functionality
+    log "Installing essential FreePBX modules..."
+    
+    # Admin modules
+    fwconsole ma downloadinstall bulkhandler &>/dev/null || true
+    fwconsole ma downloadinstall customappsreg &>/dev/null || true
+    fwconsole ma downloadinstall featurecodeadmin &>/dev/null || true
+    fwconsole ma downloadinstall recordings &>/dev/null || true
+    fwconsole ma downloadinstall soundlang &>/dev/null || true
+    fwconsole ma downloadinstall ucp &>/dev/null || true
+    fwconsole ma downloadinstall userman &>/dev/null || true
+    
+    # Application modules (vital for PBX functionality)
+    fwconsole ma downloadinstall announcement &>/dev/null || true
+    fwconsole ma downloadinstall calendar &>/dev/null || true
+    fwconsole ma downloadinstall callrecording &>/dev/null || true
+    fwconsole ma downloadinstall conferences &>/dev/null || true
+    fwconsole ma downloadinstall findmefollow &>/dev/null || true
+    fwconsole ma downloadinstall ivr &>/dev/null || true
+    fwconsole ma downloadinstall infoservices &>/dev/null || true
+    fwconsole ma downloadinstall paging &>/dev/null || true
+    fwconsole ma downloadinstall parking &>/dev/null || true
+    fwconsole ma downloadinstall queues &>/dev/null || true
+    fwconsole ma downloadinstall ringgroups &>/dev/null || true
+    
+    # Reports modules
+    fwconsole ma downloadinstall asterisklogfiles &>/dev/null || true
+    fwconsole ma downloadinstall cdr &>/dev/null || true
+    fwconsole ma downloadinstall cel &>/dev/null || true
+    
+    # Settings modules
+    fwconsole ma downloadinstall fax &>/dev/null || true
+    fwconsole ma downloadinstall musiconhold &>/dev/null || true
+    
+    # PM2 module for Node.js services
+    fwconsole ma downloadinstall pm2 &>/dev/null || true
+    
     fwconsole ma remove firewall &>/dev/null || true
+    
+    log "Reloading FreePBX with all modules..."
     fwconsole reload
 fi
 
@@ -465,5 +505,5 @@ rm -f /etc/motd 2>/dev/null  # Remove static motd to avoid duplication
 
 echo -e "${GREEN}========================================================${NC}"
 echo -e "${GREEN}            FREEPBX INSTALLATION COMPLETE!              ${NC}"
-echo -e "${GREEN}       Access: http://$(hostname -I | cut -d' ' -f1)/admin  ${NC}"
+echo -e "${GREEN}           Access: http://$(hostname -I | cut -d' ' -f1)/admin  ${NC}"
 echo -e "${GREEN}========================================================${NC}"
