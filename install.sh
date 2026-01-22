@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================================
-# PROJECT:   Armbian PBX Installer (Asterisk 22 + FreePBX 17 + LAMP) v0.4.3
+# PROJECT:   Armbian PBX Installer (Asterisk 22 + FreePBX 17 + LAMP) v0.4.4
 # TARGET:    Debian 12 Bookworm ARM64
 # ============================================================================
 
@@ -136,7 +136,7 @@ EOF
     [ -d "$STAGE_DIR/usr/sbin" ] && cp -f "$STAGE_DIR/usr/sbin/asterisk" /usr/sbin/
     [ -d "$STAGE_DIR/usr/lib/asterisk/modules" ] && cp -rf "$STAGE_DIR/usr/lib/asterisk/modules"/* /usr/lib/asterisk/modules/
     
-    # 6. PERMISSION RESTORATION (CRITICAL!)
+    # 6. PERMISSION RESTORATION
     log "Restoring correct permissions..."
     chown asterisk:asterisk /usr/sbin/asterisk
     chmod +x /usr/sbin/asterisk
@@ -221,6 +221,7 @@ apt-get install -y \
     unixodbc unixodbc-dev odbcinst libltdl7 libicu-dev \
     liburiparser1 libjwt-dev liblua5.4-0 libtinfo6 \
     libsrtp2-1 libportaudio2 nodejs npm acl haveged jq \
+    dnsutils bind9-dnsutils bind9-host fail2ban \
     php php-cli php-common php-curl php-gd php-mbstring \
     php-mysql php-soap php-xml php-intl php-zip php-bcmath \
     php-ldap php-pear libapache2-mod-php
@@ -240,7 +241,45 @@ for INI in /etc/php/8.2/apache2/php.ini /etc/php/8.2/cli/php.ini; do
     fi
 done
 
-# Preventive fix for NetworkManager D-Bus connection
+# Install ionCube Loader (required for FreePBX commercial modules, some are working soo..I'm installing those too.)
+log "Installing ionCube Loader for PHP..."
+IONCUBE_DIR="/tmp/ioncube_install"
+rm -rf "$IONCUBE_DIR" && mkdir -p "$IONCUBE_DIR"
+cd "$IONCUBE_DIR"
+
+# Download ionCube Loader for ARM64
+if wget -q https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_aarch64.tar.gz; then
+    tar xzf ioncube_loaders_lin_aarch64.tar.gz
+    
+    # Determine PHP extension directory
+    PHP_EXT_DIR=$(php -i 2>/dev/null | grep "^extension_dir" | awk '{print $3}')
+    if [ -z "$PHP_EXT_DIR" ]; then
+        # Fallback to common path for PHP 8.2
+        PHP_EXT_DIR="/usr/lib/php/20220829"
+    fi
+    
+    # Copy the loader for PHP 8.2
+    if [ -f "ioncube/ioncube_loader_lin_8.2.so" ]; then
+        cp ioncube/ioncube_loader_lin_8.2.so "$PHP_EXT_DIR/"
+        
+        # Configure PHP to load ionCube (must be loaded FIRST, before other extensions, or PHP will break)
+        echo "zend_extension = $PHP_EXT_DIR/ioncube_loader_lin_8.2.so" > /etc/php/8.2/mods-available/ioncube.ini
+        ln -sf /etc/php/8.2/mods-available/ioncube.ini /etc/php/8.2/apache2/conf.d/00-ioncube.ini
+        ln -sf /etc/php/8.2/mods-available/ioncube.ini /etc/php/8.2/cli/conf.d/00-ioncube.ini
+        
+        log "✓ ionCube Loader installed successfully"
+    else
+        warn "ionCube Loader file not found, FreePBX commercial modules may not work"
+    fi
+else
+    warn "Failed to download ionCube Loader, FreePBX commercial modules may not work"
+fi
+
+cd /
+rm -rf "$IONCUBE_DIR"
+
+# Preventive fix for NetworkManager D-Bus connection, may not be needed in the future,
+# but it doesn't hurt to have it for now.
 log "Configuring NetworkManager systemd override..."
 mkdir -p /etc/systemd/system/NetworkManager.service.d
 cat > /etc/systemd/system/NetworkManager.service.d/dbus-fix.conf <<'EOF'
@@ -264,7 +303,7 @@ if ! getent passwd asterisk >/dev/null; then
 fi
 
 log "Fetching latest Asterisk 22 release..."
-# Try to get the latest release from GitHub API
+# Try to get the latest release from GitHub API (slythel2 repo)
 LATEST_URL=$(curl -s "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" | jq -r '.assets[] | select(.name | contains("asterisk")) | .browser_download_url' | head -n 1)
 
 if [ -z "$LATEST_URL" ]; then
@@ -353,6 +392,18 @@ log "Initializing MariaDB..."
 mkdir -p /run/mysqld
 chown mysql:mysql /run/mysqld
 chmod 755 /run/mysqld
+
+# Create tmpfiles.d configuration to persist /run/mysqld across reboots
+log "Configuring MariaDB tmpfiles.d for reboot persistence..."
+mkdir -p /etc/tmpfiles.d
+cat > /etc/tmpfiles.d/mariadb.conf <<'EOF'
+# MariaDB runtime directory
+# Type Path            Mode UID   GID   Age Argument
+d      /run/mysqld    0755 mysql mysql -   -
+EOF
+
+# Apply tmpfiles configuration immediately
+systemd-tmpfiles --create /etc/tmpfiles.d/mariadb.conf 2>/dev/null || true
 
 # Configure MariaDB to listen on TCP (FreePBX needs this)
 cat > /etc/mysql/mariadb.conf.d/99-freepbx.cnf <<'EOF'
@@ -450,6 +501,20 @@ if [ $ASTERISK_READY -eq 0 ]; then
     error "Asterisk failed to respond. Check /var/log/asterisk/messages"
 fi
 
+# --- DNS VERIFICATION (Critical for SIP Trunks) ---
+log "Verifying DNS resolution for SIP trunks..."
+if command -v dig &>/dev/null; then
+    # Test DNS resolution with a common DNS server
+    TEST_DOMAIN="google.com"
+    if dig "$TEST_DOMAIN" +short | grep -q .; then
+        log "✓ DNS resolution is working correctly"
+    else
+        warn "DNS resolution may have issues. Check /etc/resolv.conf - SIP trunk registration may fail!"
+    fi
+else
+    warn "dig command not available. DNS packages may not be installed correctly."
+fi
+
 # --- 7. FREEPBX INSTALLATION ---
 log "Installing FreePBX 17..."
 cd /usr/src
@@ -500,46 +565,100 @@ fi
 if command -v fwconsole &> /dev/null; then
     fwconsole chown
     
-    # Install essential FreePBX modules for complete functionality
-    log "Installing essential FreePBX modules..."
+    log "Restarting Asterisk to load DNS libraries..."
+    systemctl restart asterisk
+    sleep 5
     
-    # Admin modules
+    # Install complete FreePBX module set, most people will use every module anyways,
+    # or install them later, so why not.
+    log "Installing FreePBX modules (this may take 10-15 minutes)..."
+    
+    # ===== ADMIN MODULES =====
+    fwconsole ma downloadinstall asterisk-cli &>/dev/null || true
+    fwconsole ma downloadinstall backup &>/dev/null || true
+    fwconsole ma downloadinstall blacklist &>/dev/null || true
     fwconsole ma downloadinstall bulkhandler &>/dev/null || true
+    fwconsole ma downloadinstall certman &>/dev/null || true
+    fwconsole ma downloadinstall cidlookup &>/dev/null || true
+    fwconsole ma downloadinstall configedit &>/dev/null || true
+    fwconsole ma downloadinstall contactmanager &>/dev/null || true
     fwconsole ma downloadinstall customappsreg &>/dev/null || true
     fwconsole ma downloadinstall featurecodeadmin &>/dev/null || true
+    fwconsole ma downloadinstall presencestate &>/dev/null || true
+    fwconsole ma downloadinstall qxact_reports &>/dev/null || true
     fwconsole ma downloadinstall recordings &>/dev/null || true
     fwconsole ma downloadinstall soundlang &>/dev/null || true
+    fwconsole ma downloadinstall superfecta &>/dev/null || true
     fwconsole ma downloadinstall ucp &>/dev/null || true
     fwconsole ma downloadinstall userman &>/dev/null || true
     
-    # Application modules (vital for PBX functionality)
+    # ===== APPLICATION MODULES =====
+    fwconsole ma downloadinstall amd &>/dev/null || true
     fwconsole ma downloadinstall announcement &>/dev/null || true
     fwconsole ma downloadinstall calendar &>/dev/null || true
+    fwconsole ma downloadinstall callback &>/dev/null || true
+    fwconsole ma downloadinstall callflow &>/dev/null || true
+    fwconsole ma downloadinstall callforward &>/dev/null || true
     fwconsole ma downloadinstall callrecording &>/dev/null || true
+    fwconsole ma downloadinstall callwaiting &>/dev/null || true
     fwconsole ma downloadinstall conferences &>/dev/null || true
+    fwconsole ma downloadinstall dictate &>/dev/null || true
+    fwconsole ma downloadinstall directory &>/dev/null || true
+    fwconsole ma downloadinstall disa &>/dev/null || true
+    fwconsole ma downloadinstall donotdisturb &>/dev/null || true
     fwconsole ma downloadinstall findmefollow &>/dev/null || true
-    fwconsole ma downloadinstall ivr &>/dev/null || true
     fwconsole ma downloadinstall infoservices &>/dev/null || true
+    fwconsole ma downloadinstall ivr &>/dev/null || true
+    fwconsole ma downloadinstall languages &>/dev/null || true
+    fwconsole ma downloadinstall miscapps &>/dev/null || true
+    fwconsole ma downloadinstall miscdests &>/dev/null || true
     fwconsole ma downloadinstall paging &>/dev/null || true
     fwconsole ma downloadinstall parking &>/dev/null || true
+    fwconsole ma downloadinstall queueprio &>/dev/null || true
     fwconsole ma downloadinstall queues &>/dev/null || true
     fwconsole ma downloadinstall ringgroups &>/dev/null || true
+    fwconsole ma downloadinstall setcid &>/dev/null || true
+    fwconsole ma downloadinstall timeconditions &>/dev/null || true
+    fwconsole ma downloadinstall tts &>/dev/null || true
+    fwconsole ma downloadinstall vmblast &>/dev/null || true
+    fwconsole ma downloadinstall wakeup &>/dev/null || true
     
-    # Reports modules
+    # ===== CONNECTIVITY MODULES =====
+    fwconsole ma downloadinstall dahdiconfig &>/dev/null || true
+    fwconsole ma downloadinstall api &>/dev/null || true
+    fwconsole ma downloadinstall sms &>/dev/null || true
+    fwconsole ma downloadinstall webrtc &>/dev/null || true
+    
+    # ===== DASHBOARD =====
+    fwconsole ma downloadinstall dashboard &>/dev/null || true
+    
+    # ===== REPORTS MODULES =====
     fwconsole ma downloadinstall asterisklogfiles &>/dev/null || true
     fwconsole ma downloadinstall cdr &>/dev/null || true
     fwconsole ma downloadinstall cel &>/dev/null || true
+    fwconsole ma downloadinstall phpinfo &>/dev/null || true
+    fwconsole ma downloadinstall printextensions &>/dev/null || true
+    fwconsole ma downloadinstall weakpasswords &>/dev/null || true
     
-    # Settings modules
+    # ===== SETTINGS MODULES =====
+    fwconsole ma downloadinstall asteriskapi &>/dev/null || true
+    fwconsole ma downloadinstall arimanager &>/dev/null || true
     fwconsole ma downloadinstall fax &>/dev/null || true
+    fwconsole ma downloadinstall filestore &>/dev/null || true
+    fwconsole ma downloadinstall iaxsettings &>/dev/null || true
     fwconsole ma downloadinstall musiconhold &>/dev/null || true
+    fwconsole ma downloadinstall pinsets &>/dev/null || true
+    fwconsole ma downloadinstall sipsettings &>/dev/null || true
+    fwconsole ma downloadinstall ttsengines &>/dev/null || true
+    fwconsole ma downloadinstall voicemail &>/dev/null || true
     
-    # PM2 module for Node.js services
+    # ===== OTHER =====
     fwconsole ma downloadinstall pm2 &>/dev/null || true
     
+    # Remove firewall module (causes network issues on Armbian - also proprietary module)
     fwconsole ma remove firewall &>/dev/null || true
     
-    log "Reloading FreePBX with all modules..."
+    log "All modules installed. Reloading FreePBX..."
     fwconsole reload
 fi
 
@@ -569,6 +688,89 @@ WantedBy=multi-user.target
 EOF
 systemctl enable free-perm-fix.service
 
+# --- FAIL2BAN SECURITY ---
+log "Configuring Fail2ban for Asterisk protection..."
+
+# Create Asterisk PJSIP authentication failure filter
+cat > /etc/fail2ban/filter.d/asterisk-pjsip.conf <<'EOF'
+# Fail2Ban filter for Asterisk PJSIP authentication failures
+# Detects: Invalid passwords, failed ACLs, wrong accounts, brute force attempts
+[Definition]
+
+# PJSIP Security Events (Asterisk 13+)
+failregex = ^.*SecurityEvent="(FailedACL|InvalidAccountID|ChallengeResponseFailed|InvalidPassword)".*RemoteAddress="IPV[46]/(UDP|TCP|TLS)/<HOST>/[0-9]+".*
+            ^.*chan_sip\.c:.*Registration from '.*' failed for '<HOST>:[0-9]+' - Wrong password$
+            ^.*chan_sip\.c:.*Registration from '.*' failed for '<HOST>:[0-9]+' - No matching peer found$
+            ^.*chan_sip\.c:.*Registration from '.*' failed for '<HOST>:[0-9]+' - Username/auth name mismatch$
+            ^.*chan_sip\.c:.*Host <HOST> failed to authenticate as .*$
+            ^.*chan_sip\.c:.*No registration for peer .*\(IPaddr: <HOST>\).*$
+            ^.*res_pjsip_registrar\.c.*Endpoint.*: Registration.*failed for '<HOST>.*' - Authentication failed.*$
+            ^.*res_pjsip\.c.*Request from '<HOST>' failed for '.*' \(callid: .*\) - Failed to authenticate.*$
+
+ignoreregex =
+EOF
+
+# Create Asterisk jail configuration with GENEROUS limits.. FreePBX is strange about SIP Registrations,
+# so we need to be lenient. (This especially applies if you use Wildix IP Phones)
+cat > /etc/fail2ban/jail.d/asterisk.local <<'EOF'
+# FreePBX Fail2ban Configuration with GENEROUS limits
+# Protects against brute force while avoiding false positives from legitimate phones
+
+[asterisk-pjsip]
+enabled = true
+port = 5060,5061
+protocol = udp,tcp
+filter = asterisk-pjsip
+logpath = /var/log/asterisk/full
+          /var/log/asterisk/messages
+
+# GENEROUS LIMITS - Avoids banning legitimate phones with connection issues
+# 20 failed attempts in 10 minutes = ban for 1 hour
+maxretry = 20
+findtime = 600
+bantime = 3600
+
+# Use iptables-multiport for better performance
+banaction = iptables-multiport
+action = %(action_mwl)s
+
+[asterisk-pjsip-ddos]
+enabled = true
+port = 5060,5061
+protocol = udp,tcp
+filter = asterisk-pjsip
+logpath = /var/log/asterisk/full
+          /var/log/asterisk/messages
+
+# Anti-DDoS: More aggressive for obvious flooding attacks
+# 40 failed attempts in 60 seconds = ban for 2 hours
+maxretry = 40
+findtime = 60
+bantime = 7200
+
+banaction = iptables-multiport
+action = %(action_mwl)s
+EOF
+
+# Enable and start fail2ban
+systemctl enable fail2ban
+systemctl restart fail2ban
+
+# Wait for fail2ban to initialize
+sleep 2
+
+# Verify fail2ban is monitoring Asterisk
+if systemctl is-active --quiet fail2ban; then
+    JAILS_ACTIVE=$(fail2ban-client status 2>/dev/null | grep "Jail list" | grep -o "asterisk" | wc -l)
+    if [ "$JAILS_ACTIVE" -ge 1 ]; then
+        log "✓ Fail2ban is active and protecting Asterisk (${JAILS_ACTIVE} jails)"
+    else
+        warn "Fail2ban is running but jails may not be active yet. Check: fail2ban-client status"
+    fi
+else
+    warn "Fail2ban failed to start. Check: systemctl status fail2ban"
+fi
+
 # SSH Login Status Banner
 log "Creating system status banner..."
 cat > /etc/update-motd.d/99-pbx-status <<'EOF'
@@ -597,6 +799,7 @@ check_service() {
 ASTERISK_STATUS=$(check_service asterisk)
 MARIADB_STATUS=$(check_service mariadb)
 APACHE_STATUS=$(check_service apache2)
+FAIL2BAN_STATUS=$(check_service fail2ban)
 
 # Display Banner
 echo -e "${BLUE}================================================================${NC}"
@@ -613,6 +816,7 @@ echo -e " ${YELLOW}Services:${NC}"
 echo -e "   Asterisk PBX:  $ASTERISK_STATUS"
 echo -e "   MariaDB:       $MARIADB_STATUS"
 echo -e "   Apache Web:    $APACHE_STATUS"
+echo -e "   Fail2ban SEC:  $FAIL2BAN_STATUS"
 echo -e ""
 echo -e "${BLUE}================================================================${NC}"
 EOF
