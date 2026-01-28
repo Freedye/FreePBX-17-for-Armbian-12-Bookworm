@@ -313,7 +313,7 @@ echo "========================================================"
 
 log "System upgrade and core dependencies..."
 apt-get update && apt-get upgrade -y
-apt-get install -y --no-install-recommends\
+apt-get install -y --no-install-recommends \
     zram-config git curl wget vim htop subversion sox pkg-config \
     sngrep apache2 mariadb-server mariadb-client odbc-mariadb \
     libxml2 libsqlite3-0 libjansson4 libedit2 libxslt1.1 \
