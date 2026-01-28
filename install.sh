@@ -112,6 +112,16 @@ download_asterisk() {
     fi
 }
 
+download_necessary_files() {
+    FOLDER_URL="https://api.github.com/repos/Freedye/FreePBX-17-for-Armbian-12-Bookworm/contents/files"
+    FILES=$(curl -s $FOLDER_URL | jq -r '.[].download_url')
+
+    for FILE in $FILES; do
+        log "Scaricando $(basename $FILE)..."
+        wget -q $FILE -P /tmp/files/
+    done
+}
+
 extract_update() {
     tar -xzf /tmp/asterisk_update.tar.gz -C "$STAGE_DIR"
 
@@ -258,7 +268,7 @@ if [[ "$1" == "--update" ]]; then
     # Verify asterisk.conf exists
     if [ ! -f /etc/asterisk/asterisk.conf ]; then
         warn "asterisk.conf missing, recreating..."
-        cp /files/asterisk.conf /etc/asterisk/asterisk.conf
+        cp /tmp/files/asterisk.conf /etc/asterisk/asterisk.conf
     fi
     
     # 3. STOP ASTERISK SAFELY
@@ -277,6 +287,7 @@ if [[ "$1" == "--update" ]]; then
     
     log "Fetching latest Asterisk 22 release from GitHub..."
     download_asterisk
+    download_necessary_files
     
     # 5. DEPLOY UPDATE
     log "Extracting update..."
@@ -336,7 +347,7 @@ install_ioncube
 # but it doesn't hurt to have it for now.
 log "Configuring NetworkManager systemd override..."
 mkdir -p /etc/systemd/system/NetworkManager.service.d
-cp /files/dbus-fix.conf /etc/systemd/system/NetworkManager.service.d/dbus-fix.conf
+cp /tmp/files/dbus-fix.conf /etc/systemd/system/NetworkManager.service.d/dbus-fix.conf
 systemctl daemon-reload
 
 # --- 3. ASTERISK USER & ARTIFACT ---
@@ -360,11 +371,11 @@ chown -R asterisk:asterisk /var/run/asterisk /var/log/asterisk /var/lib/asterisk
 ldconfig
 
 # Create a clean asterisk.conf
-cp /files/asterisk.conf /etc/asterisk/asterisk.conf
+cp /tmp/files/asterisk.conf /etc/asterisk/asterisk.conf
 chown asterisk:asterisk /etc/asterisk/asterisk.conf
 
 # Systemd Service Fix
-cp /files/asterisk.service /etc/systemd/system/asterisk.service
+cp /tmp/files/asterisk.service /etc/systemd/system/asterisk.service
 
 systemctl daemon-reload
 systemctl enable asterisk mariadb apache2
@@ -380,13 +391,13 @@ chmod 755 /run/mysqld
 # Create tmpfiles.d configuration to persist /run/mysqld across reboots
 log "Configuring MariaDB tmpfiles.d for reboot persistence..."
 mkdir -p /etc/tmpfiles.d
-cp /files/mariadb.conf /etc/tmpfiles.d/mariadb.conf
+cp /tmp/files/mariadb.conf /etc/tmpfiles.d/mariadb.conf
 
 # Apply tmpfiles configuration immediately
 systemd-tmpfiles --create /etc/tmpfiles.d/mariadb.conf 2>/dev/null || true
 
 # Configure MariaDB to listen on TCP (FreePBX needs this)
-cp /files/99-freepbx.cnf /etc/mysql/mariadb.conf.d/99-freepbx.cnf
+cp /tmp/files/99-freepbx.cnf /etc/mysql/mariadb.conf.d/99-freepbx.cnf
 
 systemctl start mariadb
 
@@ -411,7 +422,7 @@ chmod 777 /tmp/mysql.sock 2>/dev/null || true
 # --- 5. APACHE CONFIGURATION ---
 log "Hardening Apache configuration..."
 # Update DocumentRoot block to allow .htaccess
-cp /files/freepbx.conf /etc/apache2/sites-available/freepbx.conf
+cp /tmp/files/freepbx.conf /etc/apache2/sites-available/freepbx.conf
 
 sed -i 's/^\(User\|Group\).*/\1 asterisk/' /etc/apache2/apache2.conf
 a2enmod rewrite
@@ -419,7 +430,7 @@ a2ensite freepbx.conf
 a2dissite 000-default.conf
 
 # Create redirect from root to FreePBX admin
-cp /files/index.pho /var/www/html/index.php
+cp /tmp/files/index.pho /var/www/html/index.php
 chown asterisk:asterisk /var/www/html/index.php
 
 systemctl restart apache2
@@ -486,8 +497,8 @@ log "Finalizing permissions and CDR setup..."
 # ODBC Fix which needs variables expansion
 ODBC_DRIVER=$(find /usr/lib -name "libmaodbc.so" | head -n 1)
 if [ -n "$ODBC_DRIVER" ]; then
-    cp /files/odbcinst.ini /etc/odbcinst.ini
-    cp /files/odbc.ini /etc/odbc.ini
+    cp /tmp/files/odbcinst.ini /etc/odbcinst.ini
+    cp /tmp/files/odbc.ini /etc/odbc.ini
 fi
 
 if command -v fwconsole &> /dev/null; then
@@ -511,21 +522,21 @@ if command -v fwconsole &> /dev/null; then
 fi
 
 # Persistence Service
-cp /files/fix_free_perm.sh /usr/local/bin/fix_free_perm.sh
+cp /tmp/files/fix_free_perm.sh /usr/local/bin/fix_free_perm.sh
 chmod +x /usr/local/bin/fix_free_perm.sh
 
-cp /files/free_perm_fix.service /etc/systemd/system/free-perm-fix.service
+cp /tmp/files/free_perm_fix.service /etc/systemd/system/free-perm-fix.service
 systemctl enable free-perm-fix.service
 
 # --- FAIL2BAN SECURITY ---
 log "Configuring Fail2ban for Asterisk protection..."
 
 # Create Asterisk PJSIP authentication failure filter
-cp /files/asterisk-pjsip.conf /etc/fail2ban/filter.d/asterisk-pjsip.conf
+cp /tmp/files/asterisk-pjsip.conf /etc/fail2ban/filter.d/asterisk-pjsip.conf
 
 # Create Asterisk jail configuration with GENEROUS limits.. FreePBX is strange about SIP Registrations,
 # so we need to be lenient. (This especially applies if you use Wildix IP Phones)
-cp /files/asterisk.local /etc/fail2ban/jail.d/asterisk.local
+cp /tmp/files/asterisk.local /etc/fail2ban/jail.d/asterisk.local
 
 # Enable and start fail2ban
 systemctl enable fail2ban
@@ -548,7 +559,7 @@ fi
 
 # SSH Login Status Banner
 log "Creating system status banner..."
-cp /files/99-pbx-status /etc/update-motd.d/99-pbx-status
+cp /tmp/files/99-pbx-status /etc/update-motd.d/99-pbx-status
 chmod +x /etc/update-motd.d/99-pbx-status
 rm -f /etc/motd 2>/dev/null  # Remove static motd to avoid duplication
 npm cache clean --force
