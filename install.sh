@@ -275,13 +275,6 @@ if [[ "$1" == "--update" ]]; then
     log "Stopping Asterisk..."
     stop_asterisk
     
-    # Verify no asterisk processes remain
-    if pgrep asterisk > /dev/null; then
-        warn "Asterisk processes still running, force killing..."
-        killall -9 asterisk 2>/dev/null || true
-        sleep 1
-    fi
-    
     # 4. DOWNLOAD UPDATE
     if ! command -v jq &> /dev/null; then apt-get update && apt-get install -y jq zram-config; fi
     
