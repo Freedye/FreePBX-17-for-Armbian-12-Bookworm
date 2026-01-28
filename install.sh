@@ -37,6 +37,11 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Enviroment Variables:
+BACKUP_DIR="/tmp/asterisk_backup_$(date +%s)"
+LATEST_URL=$(curl -s "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" | jq -r '.assets[] | select(.name | contains("asterisk")) | .browser_download_url' | head -n 1)
+FOLDER_URL="https://api.github.com/repos/Freedye/FreePBX-17-for-Armbian-12-Bookworm/contents/files"
+
 log() { echo -e "${GREEN}[$(date '+%H:%M:%S')] $1${NC}" | tee -a "$LOG_FILE"; }
 
 warn() { echo -e "${YELLOW}[WARNING] $1${NC}" | tee -a "$LOG_FILE"; }
@@ -44,7 +49,6 @@ warn() { echo -e "${YELLOW}[WARNING] $1${NC}" | tee -a "$LOG_FILE"; }
 error() { echo -e "${RED}[ERROR] $1${NC}" | tee -a "$LOG_FILE"; exit 1; }
 
 backup_asterisk () {
-    BACKUP_DIR="/tmp/asterisk_backup_$(date +%s)"
     mkdir -p "$BACKUP_DIR"
     
     log "Creating backup of current Asterisk installation..."
@@ -65,8 +69,6 @@ stop_asterisk() {
 }
 
 download_asterisk() {
-        LATEST_URL=$(curl -s "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" | jq -r '.assets[] | select(.name | contains("asterisk")) | .browser_download_url' | head -n 1)
-    
     if [ -z "$LATEST_URL" ]; then
         warn "Could not fetch latest release, using fallback URL."
         ASTERISK_ARTIFACT_URL="$FALLBACK_ARTIFACT"
@@ -113,7 +115,6 @@ download_asterisk() {
 }
 
 download_necessary_files() {
-    FOLDER_URL="https://api.github.com/repos/Freedye/FreePBX-17-for-Armbian-12-Bookworm/contents/files"
     FILES=$(curl -s $FOLDER_URL | jq -r '.[].download_url')
 
     for FILE in $FILES; do
