@@ -64,43 +64,8 @@ stop_asterisk() {
     sleep 1
 }
 
-
-if [[ $EUID -ne 0 ]]; then echo "Run as root!"; exit 1; fi
-
-# --- UPDATER ---
-if [[ "$1" == "--update" ]]; then
-    log "Starting Asterisk 22 Robust Update with Rollback Protection..."
-    backup_asterisk
-    log "Backup created at: $BACKUP_DIR"
-    
-    # 2. ENVIRONMENT VERIFICATION
-    log "Verifying Asterisk environment..."
-    
-    # Ensure all critical directories exist
-    mkdir -p /var/run/asterisk /var/log/asterisk /var/lib/asterisk /var/spool/asterisk /etc/asterisk /usr/lib/asterisk/modules
-    
-    # Verify asterisk.conf exists
-    if [ ! -f /etc/asterisk/asterisk.conf ]; then
-        warn "asterisk.conf missing, recreating..."
-        cp /files/asterisk.conf /etc/asterisk/asterisk.conf
-    fi
-    
-    # 3. STOP ASTERISK SAFELY
-    log "Stopping Asterisk..."
-    stop_asterisk
-    
-    # Verify no asterisk processes remain
-    if pgrep asterisk > /dev/null; then
-        warn "Asterisk processes still running, force killing..."
-        killall -9 asterisk 2>/dev/null || true
-        sleep 1
-    fi
-    
-    # 4. DOWNLOAD UPDATE
-    if ! command -v jq &> /dev/null; then apt-get update && apt-get install -y jq zram-config; fi
-    
-    log "Fetching latest Asterisk 22 release from GitHub..."
-    LATEST_URL=$(curl -s "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" | jq -r '.assets[] | select(.name | contains("asterisk")) | .browser_download_url' | head -n 1)
+download_asterisk() {
+        LATEST_URL=$(curl -s "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" | jq -r '.assets[] | select(.name | contains("asterisk")) | .browser_download_url' | head -n 1)
     
     if [ -z "$LATEST_URL" ]; then
         warn "Could not fetch latest release, using fallback URL."
@@ -138,9 +103,16 @@ if [[ "$1" == "--update" ]]; then
         rm -rf "$BACKUP_DIR"
         exit 1
     fi
-    
-    # 5. DEPLOY UPDATE
-    log "Extracting update..."
+
+    if [ $DOWNLOAD_SUCCESS -eq 0 ]; then
+        error "Failed to download update after 3 attempts. Restoring backup..."
+        # Rollback not needed here since we haven't changed anything yet
+        rm -rf "$BACKUP_DIR"
+        exit 1
+    fi
+}
+
+extract_update() {
     tar -xzf /tmp/asterisk_update.tar.gz -C "$STAGE_DIR"
 
     log "Deploying updated binaries and modules..."
@@ -157,12 +129,9 @@ if [[ "$1" == "--update" ]]; then
     # 7. POST-UPDATE HEALTH CHECK
     rm -rf "$STAGE_DIR" /tmp/asterisk_update.tar.gz
     ldconfig
-    
-    log "Starting Asterisk and performing health check..."
-    systemctl start asterisk
-    sleep 5
-    
-    # Verify Asterisk is responsive
+}
+
+check_pulse() {
     ASTERISK_HEALTHY=0
     for i in {1..10}; do
         if asterisk -rx "core show version" &>/dev/null; then
@@ -199,6 +168,126 @@ if [[ "$1" == "--update" ]]; then
         rm -rf "$BACKUP_DIR"
         error "Rollback complete. Previous Asterisk version restored. Please check logs: journalctl -xeu asterisk"
     fi
+}
+
+optimize_php() {
+    for INI in /etc/php/8.2/apache2/php.ini /etc/php/8.2/cli/php.ini; do
+        if [ -f "$INI" ]; then
+            sed -i 's/^;opcache.enable=.*/opcache.enable=1/' "$INI"
+            sed -i 's/^;opcache.memory_consumption=.*/opcache.memory_consumption=128/' "$INI"
+            sed -i 's/^;opcache.interned_strings_buffer=.*/opcache.interned_strings_buffer=8/' "$INI"
+            sed -i 's/^;opcache.max_accelerated_files=.*/opcache.max_accelerated_files=10000/' "$INI"
+
+            sed -i 's/^memory_limit = .*/memory_limit = 512M/' "$INI"
+            sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 120M/' "$INI"
+            sed -i 's/^post_max_size = .*/post_max_size = 120M/' "$INI"
+            sed -i 's/^;date.timezone =.*/date.timezone = UTC/' "$INI"
+            
+            # Configure MySQL socket paths for PDO/MySQLi
+            sed -i "s|^;*pdo_mysql.default_socket.*|pdo_mysql.default_socket = /run/mysqld/mysqld.sock|" "$INI"
+            sed -i "s|^;*mysqli.default_socket.*|mysqli.default_socket = /run/mysqld/mysqld.sock|" "$INI"
+            sed -i "s|^;*mysql.default_socket.*|mysql.default_socket = /run/mysqld/mysqld.sock|" "$INI"
+        fi
+    done
+}
+
+install_ioncube() {
+    log "Installing ionCube Loader for PHP..."
+    IONCUBE_DIR="/tmp/ioncube_install"
+    rm -rf "$IONCUBE_DIR" && mkdir -p "$IONCUBE_DIR"
+    cd "$IONCUBE_DIR"
+
+    # Download ionCube Loader for ARM64
+    if wget -q https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_aarch64.tar.gz; then
+        tar xzf ioncube_loaders_lin_aarch64.tar.gz
+        
+        # Determine PHP extension directory
+        PHP_EXT_DIR=$(php -i 2>/dev/null | grep "^extension_dir" | awk '{print $3}')
+        if [ -z "$PHP_EXT_DIR" ]; then
+            # Fallback to common path for PHP 8.2
+            PHP_EXT_DIR="/usr/lib/php/20220829"
+        fi
+        
+        # Copy the loader for PHP 8.2
+        if [ -f "ioncube/ioncube_loader_lin_8.2.so" ]; then
+            cp ioncube/ioncube_loader_lin_8.2.so "$PHP_EXT_DIR/"
+            
+            # Configure PHP to load ionCube (must be loaded FIRST, before other extensions, or PHP will break)
+            echo "zend_extension = $PHP_EXT_DIR/ioncube_loader_lin_8.2.so" > /etc/php/8.2/mods-available/ioncube.ini
+            ln -sf /etc/php/8.2/mods-available/ioncube.ini /etc/php/8.2/apache2/conf.d/00-ioncube.ini
+            ln -sf /etc/php/8.2/mods-available/ioncube.ini /etc/php/8.2/cli/conf.d/00-ioncube.ini
+            
+            log "✓ ionCube Loader installed successfully"
+        else
+            warn "ionCube Loader file not found, FreePBX commercial modules may not work"
+        fi
+    else
+        warn "Failed to download ionCube Loader, FreePBX commercial modules may not work"
+    fi
+
+    cd /
+    rm -rf "$IONCUBE_DIR"
+}
+
+configure_mariadb() {
+    mysqladmin -u root password "$DB_ROOT_PASS" 2>/dev/null || true
+
+    mysql -u root -p"$DB_ROOT_PASS" -e "CREATE DATABASE IF NOT EXISTS asterisk; CREATE DATABASE IF NOT EXISTS asteriskcdrdb;"
+    # Grant for both socket (@localhost) and TCP (@127.0.0.1) connections
+    mysql -u root -p"$DB_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON asterisk.* TO 'asterisk'@'localhost' IDENTIFIED BY '$DB_ROOT_PASS';"
+    mysql -u root -p"$DB_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON asterisk.* TO 'asterisk'@'127.0.0.1' IDENTIFIED BY '$DB_ROOT_PASS';"
+    mysql -u root -p"$DB_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON asteriskcdrdb.* TO 'asterisk'@'localhost';"
+    mysql -u root -p"$DB_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON asteriskcdrdb.* TO 'asterisk'@'127.0.0.1';"
+    mysql -u root -p"$DB_ROOT_PASS" -e "FLUSH PRIVILEGES;"
+}
+
+if [[ $EUID -ne 0 ]]; then echo "Run as root!"; exit 1; fi
+
+# --- UPDATER ---
+if [[ "$1" == "--update" ]]; then
+    log "Starting Asterisk 22 Robust Update with Rollback Protection..."
+    backup_asterisk
+    log "Backup created at: $BACKUP_DIR"
+    
+    # 2. ENVIRONMENT VERIFICATION
+    log "Verifying Asterisk environment..."
+    
+    # Ensure all critical directories exist
+    mkdir -p /var/run/asterisk /var/log/asterisk /var/lib/asterisk /var/spool/asterisk /etc/asterisk /usr/lib/asterisk/modules
+    
+    # Verify asterisk.conf exists
+    if [ ! -f /etc/asterisk/asterisk.conf ]; then
+        warn "asterisk.conf missing, recreating..."
+        cp /files/asterisk.conf /etc/asterisk/asterisk.conf
+    fi
+    
+    # 3. STOP ASTERISK SAFELY
+    log "Stopping Asterisk..."
+    stop_asterisk
+    
+    # Verify no asterisk processes remain
+    if pgrep asterisk > /dev/null; then
+        warn "Asterisk processes still running, force killing..."
+        killall -9 asterisk 2>/dev/null || true
+        sleep 1
+    fi
+    
+    # 4. DOWNLOAD UPDATE
+    if ! command -v jq &> /dev/null; then apt-get update && apt-get install -y jq zram-config; fi
+    
+    log "Fetching latest Asterisk 22 release from GitHub..."
+    download_asterisk
+    
+    # 5. DEPLOY UPDATE
+    log "Extracting update..."
+    extract_update
+    
+    log "Starting Asterisk and performing health check..."
+    systemctl start asterisk
+    sleep 5
+
+    # Verify Asterisk is responsive
+    check_pulse
     
     # 8. FINAL VALIDATION AND CLEANUP
     log "Running FreePBX reload..."
@@ -238,61 +327,10 @@ apt-get install -y --no-install-recommends\
     php-ldap php-pear libapache2-mod-php
 
 # PHP Optimization + MySQL Socket Configuration
-for INI in /etc/php/8.2/apache2/php.ini /etc/php/8.2/cli/php.ini; do
-    if [ -f "$INI" ]; then
-        sed -i 's/^;opcache.enable=.*/opcache.enable=1/' "$INI"
-        sed -i 's/^;opcache.memory_consumption=.*/opcache.memory_consumption=128/' "$INI"
-        sed -i 's/^;opcache.interned_strings_buffer=.*/opcache.interned_strings_buffer=8/' "$INI"
-        sed -i 's/^;opcache.max_accelerated_files=.*/opcache.max_accelerated_files=10000/' "$INI"
-
-        sed -i 's/^memory_limit = .*/memory_limit = 512M/' "$INI"
-        sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 120M/' "$INI"
-        sed -i 's/^post_max_size = .*/post_max_size = 120M/' "$INI"
-        sed -i 's/^;date.timezone =.*/date.timezone = UTC/' "$INI"
-        
-        # Configure MySQL socket paths for PDO/MySQLi
-        sed -i "s|^;*pdo_mysql.default_socket.*|pdo_mysql.default_socket = /run/mysqld/mysqld.sock|" "$INI"
-        sed -i "s|^;*mysqli.default_socket.*|mysqli.default_socket = /run/mysqld/mysqld.sock|" "$INI"
-        sed -i "s|^;*mysql.default_socket.*|mysql.default_socket = /run/mysqld/mysqld.sock|" "$INI"
-    fi
-done
+optimize_php
 
 # Install ionCube Loader (required for FreePBX commercial modules, some are working soo..I'm installing those too.)
-log "Installing ionCube Loader for PHP..."
-IONCUBE_DIR="/tmp/ioncube_install"
-rm -rf "$IONCUBE_DIR" && mkdir -p "$IONCUBE_DIR"
-cd "$IONCUBE_DIR"
-
-# Download ionCube Loader for ARM64
-if wget -q https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_aarch64.tar.gz; then
-    tar xzf ioncube_loaders_lin_aarch64.tar.gz
-    
-    # Determine PHP extension directory
-    PHP_EXT_DIR=$(php -i 2>/dev/null | grep "^extension_dir" | awk '{print $3}')
-    if [ -z "$PHP_EXT_DIR" ]; then
-        # Fallback to common path for PHP 8.2
-        PHP_EXT_DIR="/usr/lib/php/20220829"
-    fi
-    
-    # Copy the loader for PHP 8.2
-    if [ -f "ioncube/ioncube_loader_lin_8.2.so" ]; then
-        cp ioncube/ioncube_loader_lin_8.2.so "$PHP_EXT_DIR/"
-        
-        # Configure PHP to load ionCube (must be loaded FIRST, before other extensions, or PHP will break)
-        echo "zend_extension = $PHP_EXT_DIR/ioncube_loader_lin_8.2.so" > /etc/php/8.2/mods-available/ioncube.ini
-        ln -sf /etc/php/8.2/mods-available/ioncube.ini /etc/php/8.2/apache2/conf.d/00-ioncube.ini
-        ln -sf /etc/php/8.2/mods-available/ioncube.ini /etc/php/8.2/cli/conf.d/00-ioncube.ini
-        
-        log "✓ ionCube Loader installed successfully"
-    else
-        warn "ionCube Loader file not found, FreePBX commercial modules may not work"
-    fi
-else
-    warn "Failed to download ionCube Loader, FreePBX commercial modules may not work"
-fi
-
-cd /
-rm -rf "$IONCUBE_DIR"
+install_ioncube
 
 # Preventive fix for NetworkManager D-Bus connection, may not be needed in the future,
 # but it doesn't hurt to have it for now.
@@ -311,40 +349,7 @@ fi
 
 log "Fetching latest Asterisk 22 release..."
 # Try to get the latest release from GitHub API (slythel2 repo)
-LATEST_URL=$(curl -s "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" | jq -r '.assets[] | select(.name | contains("asterisk")) | .browser_download_url' | head -n 1)
-
-if [ -z "$LATEST_URL" ]; then
-    warn "Could not fetch latest release from GitHub API, using fallback URL."
-    ASTERISK_ARTIFACT_URL="$FALLBACK_ARTIFACT"
-else
-    log "Latest release found: $LATEST_URL"
-    ASTERISK_ARTIFACT_URL="$LATEST_URL"
-fi
-
-log "Downloading Asterisk artifact..."
-# Download with retry mechanism and error handling
-DOWNLOAD_SUCCESS=0
-for attempt in {1..3}; do
-    if wget --show-progress -O /tmp/asterisk.tar.gz "$ASTERISK_ARTIFACT_URL"; then
-        # Verify the downloaded file is valid
-        if tar -tzf /tmp/asterisk.tar.gz >/dev/null 2>&1; then
-            DOWNLOAD_SUCCESS=1
-            log "Asterisk artifact downloaded and verified successfully."
-            break
-        else
-            warn "Downloaded file is corrupted. Attempt $attempt/3"
-            rm -f /tmp/asterisk.tar.gz
-        fi
-    else
-        warn "Download failed. Attempt $attempt/3"
-        rm -f /tmp/asterisk.tar.gz
-    fi
-    sleep 2
-done
-
-if [ $DOWNLOAD_SUCCESS -eq 0 ]; then
-    error "Failed to download Asterisk artifact after 3 attempts. Check your internet connection and the URL: $FALLBACK_ARTIFACT"
-fi
+download_asterisk
 
 tar -xzf /tmp/asterisk.tar.gz -C /
 rm /tmp/asterisk.tar.gz
@@ -391,15 +396,7 @@ if ! systemctl is-active --quiet mariadb; then
     error "MariaDB failed to start. Check: journalctl -xeu mariadb.service"
 fi
 
-mysqladmin -u root password "$DB_ROOT_PASS" 2>/dev/null || true
-
-mysql -u root -p"$DB_ROOT_PASS" -e "CREATE DATABASE IF NOT EXISTS asterisk; CREATE DATABASE IF NOT EXISTS asteriskcdrdb;"
-# Grant for both socket (@localhost) and TCP (@127.0.0.1) connections
-mysql -u root -p"$DB_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON asterisk.* TO 'asterisk'@'localhost' IDENTIFIED BY '$DB_ROOT_PASS';"
-mysql -u root -p"$DB_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON asterisk.* TO 'asterisk'@'127.0.0.1' IDENTIFIED BY '$DB_ROOT_PASS';"
-mysql -u root -p"$DB_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON asteriskcdrdb.* TO 'asterisk'@'localhost';"
-mysql -u root -p"$DB_ROOT_PASS" -e "GRANT ALL PRIVILEGES ON asteriskcdrdb.* TO 'asterisk'@'127.0.0.1';"
-mysql -u root -p"$DB_ROOT_PASS" -e "FLUSH PRIVILEGES;"
+configure_mariadb
 
 # Configure MySQL socket for FreePBX which must be done before FreePBX install
 log "Configuring MySQL socket for FreePBX..."
